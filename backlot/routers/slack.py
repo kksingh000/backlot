@@ -183,6 +183,43 @@ JSON_BODY_METHODS = frozenset(
     }
 )
 
+#: The most bytes real's edge reads a body of before `_BODY_LIMIT_EXEMPT` -- on every other method,
+#: served or not: slack.com answered a body of 2097152 bytes the method's own answer and one of
+#: 2097153 :func:`body_too_large`'s 413, measured with no token against 21 served methods, ten
+#: unserved and a name it does not have, on 2026-11-15 (UTC).
+BODY_LIMIT = 2 * 1024 * 1024
+#: The methods real's edge does not bound at :data:`BODY_LIMIT`: each answered its own 200, or
+#: `chat.postMessage` and `chat.update`'s `not_authed`, to a body of 2097153 bytes, and
+#: `chat.postMessage` one of 16777217 too (2026-11-15, UTC). The name is the one `method_name` reads
+#: off the path, case as sent, so `chat%2EpostMessage` is exempt and `chat.postmessage` is not.
+_BODY_LIMIT_EXEMPT = frozenset(
+    {
+        "chat.postMessage",
+        "chat.update",
+        "files.upload",
+        "files.completeUploadExternal",
+        "chat.unfurl",
+    }
+)
+
+
+def body_too_large() -> Response:
+    """Envoy's 413 for a body past :data:`BODY_LIMIT` on a method :data:`_BODY_LIMIT_EXEMPT` does
+    not name: `text/plain` with no charset, holding `Payload Too Large`, and the `server` and
+    `x-edge-backend` of the edge in front of slack.com, each measured 2026-11-15 (UTC). Connection
+    is closed after it, as every front-door refusal here is (``backlot.request_target._page``)."""
+    return Response(
+        b"Payload Too Large",
+        status_code=413,
+        headers={
+            "content-type": "text/plain",
+            "server": "envoy",
+            "x-edge-backend": "envoy-www",
+            "connection": "close",
+        },
+    )
+
+
 # The write surface. Each lists what Backlot actually READS, the way every other `_P_` here does:
 # a param the vendor documents but Backlot ignores stays an acknowledged gap in the fidelity
 # baseline rather than a declaration that promises behaviour it does not have.

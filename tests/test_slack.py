@@ -6626,3 +6626,46 @@ def test_a_reply_names_its_threads_root_in_parent_user_id(wclient, tokens, admin
             ([m.get("parent_user_id") for m in answers], {m.get("parent_user_id") for m in listed})
         )
     assert got == [([uid] * 4, {uid}) for _, uid in rows]
+
+
+def test_slack_a_body_past_2mib_is_the_edges_413(client):
+    """A body over ``slack.BODY_LIMIT`` on a method ``slack._BODY_LIMIT_EXEMPT`` does not name is
+    real's edge's 413 (issue #862): `text/plain` with no charset, `Payload Too Large`, and the
+    `server` and `x-edge-backend` of the edge in front of slack.com, whatever the credential. A
+    body of exactly the limit is still read and answered as any other."""
+    at_limit = ("a=" + "x" * (slack.BODY_LIMIT - 2)).encode()
+    over_limit = ("a=" + "x" * (slack.BODY_LIMIT - 1)).encode()
+    form = {"content-type": _FORM}
+
+    ok = client.post("/slack/api/api.test", content=at_limit, headers=form)
+    assert ok.status_code == 200
+    assert ok.json()["ok"] is True
+
+    refused = client.post("/slack/api/api.test", content=over_limit, headers=form)
+    assert refused.status_code == 413
+    assert refused.content == b"Payload Too Large"
+    assert refused.headers["content-type"] == "text/plain"
+    assert refused.headers["server"] == "envoy"
+    assert refused.headers["x-edge-backend"] == "envoy-www"
+    assert refused.headers["connection"] == "close"
+
+
+@pytest.mark.parametrize("method", sorted(slack._BODY_LIMIT_EXEMPT))
+def test_slack_five_methods_are_not_bounded_by_the_edges_413(client, method):
+    """``chat.postMessage``, ``chat.update``, ``files.upload``, ``files.completeUploadExternal``
+    and ``chat.unfurl`` read a body past ``slack.BODY_LIMIT`` as any other size (issue #862):
+    served or not, the method's own answer comes back rather than the edge's 413."""
+    over_limit = ("a=" + "x" * (slack.BODY_LIMIT - 1)).encode()
+    r = client.post(f"/slack/api/{method}", content=over_limit, headers={"content-type": _FORM})
+    assert r.status_code == 200
+
+
+def test_slack_body_limit_reads_the_method_name_case_sensitively(client):
+    """The exemption is keyed on the method name as sent, case included
+    (``slack.method_name``): ``chat.postmessage``, lower-case, is not ``chat.postMessage`` and
+    so is still bounded at ``slack.BODY_LIMIT``."""
+    over_limit = ("a=" + "x" * (slack.BODY_LIMIT - 1)).encode()
+    r = client.post(
+        "/slack/api/chat.postmessage", content=over_limit, headers={"content-type": _FORM}
+    )
+    assert r.status_code == 413
